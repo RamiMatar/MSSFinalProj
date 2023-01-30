@@ -2,8 +2,9 @@ import torch.nn as nn
 import torch
 import torchaudio
 
-class DataHandler():
-    def __init__(self,batch_size,shortest_duration, sampling_rate, resampling_rate, hop_length, longest_duration, segment_overlap, segment_chunks, segment_length, chunks_below_percentile, drop_percentile):
+class DataHandler(nn.Module):
+    def __init__(self, batch_size,shortest_duration, sampling_rate, resampling_rate, hop_length, longest_duration, segment_overlap, segment_chunks, segment_length, chunks_below_percentile, drop_percentile, mode = 'Train'):
+        super().__init__()
         self.sample_rate = resampling_rate
         self.shortest_duration = shortest_duration
         self.longest_duration = longest_duration
@@ -19,6 +20,12 @@ class DataHandler():
         self.batch_size = batch_size
         self.resample = torchaudio.transforms.Resample(sampling_rate, resampling_rate).double()
 
+    def forward(self, batch):
+        print("XCVXCVXCVZFXB")
+        if self.mode == 'Train':
+            return self.batchize_training_item(batch)
+        else:
+            return self.batchize_testing_item(batch)
 
     def batchize_training_item(self,stems):
         # we need to trim the stems to the shortest duration track, starting from a random location
