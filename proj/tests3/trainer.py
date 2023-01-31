@@ -56,6 +56,6 @@ if __name__ == '__main__':
         trainLoader = DataLoader(musTraining, batch_size = 1, collate_fn = collate, num_workers = 4)
         lightning = LightningModel(hparams)
         ddp = DDPStrategy(process_group_backend="gloo")
-        trainer = pl.Trainer(max_epochs=2, accelerator = 'gpu', devices = 2, strategy = ddp, log_every_n_steps=15)
+        trainer = pl.Trainer(max_epochs=2, accelerator = 'cpu', devices = 2, strategy = 'ddp', log_every_n_steps=15)
         trainer.fit(lightning, trainLoader, valLoader)
 

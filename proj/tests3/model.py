@@ -3,7 +3,9 @@ import torch
 import torch.nn.functional as F
 import torchaudio
 from torchaudio.transforms import *
+from torch.utils.data import DataLoader
 import pytorch_lightning as pl
+from new_mus import newMus
 from datahandler import DataHandler
 from loss import *
 
@@ -15,6 +17,9 @@ class LightningModel(pl.LightningModule):
         self.mus_path = hparams['mus_path']
         self.bandwidths = [int(bandwidth) for bandwidth in hparams['bandwidths'].split(',')]
         self.step = 0
+        self.filtered_training_indices = hparams['filtered_training_indices']
+        self.filtered_validation_indices = hparams['filtered_validation_indices']
+        self.filtered_testing_indices = None # fix this
         self.n_mels = hparams['n_mels']
         self.N = hparams['bandwidth_freq_out_size']
         self.K = len(self.bandwidths)
@@ -61,6 +66,27 @@ class LightningModel(pl.LightningModule):
         return loss
     
     def validation_step(self, batch, batch_idx):
+        print("HELLO I'm REACHED")
+        if self.step % 5 == 0:
+            torch.cuda.empty_cache()
+        self.step += 1
+        
+        data, labels = self.data_handler.batchize_training_item(batch)
+
+        print("HELLO I'm REACHED")
+        stfts, chromas, mfccs = self.transforms(data)
+
+        print("HELLO I'm REACHED")
+        predicted_sources = self.forward_pass(stfts, chromas, mfccs)
+
+        print("HELLO I'm REACHED")
+        loss = self.loss(predicted_sources, labels[:,3])
+
+        print("HELLO I'm REACHED")
+        self.log("valid_loss", loss)
+        return loss
+    
+    def test_step(self, batch, batch_idx):
         if self.step % 5 == 0:
             torch.cuda.empty_cache()
         self.step += 1
@@ -69,11 +95,35 @@ class LightningModel(pl.LightningModule):
         stfts, chromas, mfccs = self.transforms(data)
         predicted_sources = self.forward_pass(stfts, chromas, mfccs)
         loss = self.loss(predicted_sources, labels[:,3])
-        self.log("valid_loss", loss)
+        self.log("test_loss", loss)
         return loss
+
+    def collate(self, batch):
+        return batch[0]
+
+    def train_dataloader(self):
+        if self.training_dataloader is None:
+            musValidation = newMus('musdb/', batch_size = 16, filtered_indices = self.filtered_training_indices)
+            valLoader = DataLoader(musValidation, batch_size = 1, collate_fn = self.collate, num_workers = 4)
+            return valLoader
+        else:
+            return self.training_dataloader
+
+    def val_dataloader(self):
+        if self.validation_dataloader is None:
+            musValidation = newMus('musdb/', subset = 'train', split= 'valid', batch_size = 16, filtered_indices = self.filtered_validation_indices)
+            valLoader = DataLoader(musValidation, batch_size = 1, collate_fn = self.collate, num_workers = 4)
+            return valLoader
+        else:
+            return self.validation_dataloader
     
-    def test_step(self, batch, batch_idx):
-        pass
+    def test_dataloader(self):
+        if self.testing_dataloader is None:
+            musValidation = newMus('musdb/', subset = 'train', split= 'test', batch_size = 16, filtered_indices = self.filtered_testing_indices)
+            valLoader = DataLoader(musValidation, batch_size = 1, collate_fn = self.collate, num_workers = 4)
+            return valLoader
+        else:
+            return self.testing_dataloader
     
     def forward_pass(self, X, chromas, mfccs):
         X = X.permute(0,1,3,4,2)
