@@ -29,9 +29,15 @@ class LightningModel(pl.LightningModule):
         self.stride1 = hparams['conv_1_stride']
         self.kernel2 = hparams['conv_2_kernel_size']
         self.stride2 = hparams['conv_2_stride']
-        self.training_dataloader = None
-        self.testing_dataloader = None
-        self.validation_dataloader = None
+        self.sampling_rate = hparams['sampling_rate']
+        self.resampling_rate = hparams['resampling_rate']
+        self.batch_size = hparams['training_batch_size']
+        self.hop_length = hparams['hop_length']
+        self.segment_length = hparams['segment_length']
+        self.resampling_ratio = self.sampling_rate / self.resampling_rate
+        self.segment_samples = int(self.segment_length * self.sampling_rate)
+        self.segment_samples = int(self.segment_samples / self.hop_length) * self.hop_length
+        self.reserved = int(0.7 * self.batch_size * self.segment_samples + self.hop_length)
         self.loss = SSLoss()
         self.bandsplit = BandSplit(self.bandwidths, self.N).double()
         self.conv1 = ConvolutionLayer(self.K, self.K, self.kernel1, self.stride1).double()
@@ -54,7 +60,7 @@ class LightningModel(pl.LightningModule):
         return x
     
     def training_step(self, batch, batch_idx):
-        if self.step % 5 == 0:
+        if self.step % 200 == 0:
             torch.cuda.empty_cache()
         self.step += 1
         
@@ -62,32 +68,23 @@ class LightningModel(pl.LightningModule):
         stfts, chromas, mfccs = self.transforms(data)
         predicted_sources = self.forward_pass(stfts, chromas, mfccs)
         loss = self.loss(predicted_sources, labels[:,3])
-        self.log("train_loss", loss)
+        self.log("train_loss", loss, sync_dist=True)
         return loss
     
     def validation_step(self, batch, batch_idx):
-        print("HELLO I'm REACHED")
-        if self.step % 5 == 0:
+        if self.step % 5 == 200:
             torch.cuda.empty_cache()
+            
         self.step += 1
-        
         data, labels = self.data_handler.batchize_training_item(batch)
-
-        print("HELLO I'm REACHED")
         stfts, chromas, mfccs = self.transforms(data)
-
-        print("HELLO I'm REACHED")
         predicted_sources = self.forward_pass(stfts, chromas, mfccs)
-
-        print("HELLO I'm REACHED")
         loss = self.loss(predicted_sources, labels[:,3])
-
-        print("HELLO I'm REACHED")
-        self.log("valid_loss", loss)
+        self.log("valid_loss", loss, sync_dist=True)
         return loss
     
     def test_step(self, batch, batch_idx):
-        if self.step % 5 == 0:
+        if self.step % 200 == 0:
             torch.cuda.empty_cache()
         self.step += 1
         
@@ -95,27 +92,36 @@ class LightningModel(pl.LightningModule):
         stfts, chromas, mfccs = self.transforms(data)
         predicted_sources = self.forward_pass(stfts, chromas, mfccs)
         loss = self.loss(predicted_sources, labels[:,3])
-        self.log("test_loss", loss)
+        self.log("test_loss", loss, sync_dist=True)
         return loss
+    
+    def trim_stems(self, stems, start):
+        # this function should trim the track to the shortest duration of the track from the start index, it allows looping back across the song.
+        if start + self.reserved > stems.shape[1]:
+            first_half = stems[:, start:, :]
+            remaining = self.reserved - (stems.shape[1] - start)
+            second_half = stems[:, :remaining, :]
+            return torch.cat((first_half, second_half), axis=1)
+        else:
+            return stems[:, start:start+self.reserved, :]
 
     def collate(self, batch):
-        return batch[0]
+        super_batch = []
+        for stems in batch:
+            x = self.trim_stems(stems, torch.randint(0, stems.shape[1], (1,)))
+            super_batch.append(x)
+        super_batch = torch.stack(super_batch, 0)
+        return super_batch.view(len(batch) * batch[0].shape[0], self.reserved, 2)
 
     def train_dataloader(self):
-        if self.training_dataloader is None:
-            musValidation = newMus('musdb/', batch_size = 16, filtered_indices = self.filtered_training_indices)
-            valLoader = DataLoader(musValidation, batch_size = 1, collate_fn = self.collate, num_workers = 4)
-            return valLoader
-        else:
-            return self.training_dataloader
+        musTraining = newMus('musdb/', batch_size = 16, filtered_indices = self.filtered_training_indices)
+        trainLoader = DataLoader(musTraining, batch_size = 8, collate_fn = self.collate, num_workers = 8, shuffle = True, persistent_workers = True)
+        return trainLoader
 
     def val_dataloader(self):
-        if self.validation_dataloader is None:
-            musValidation = newMus('musdb/', subset = 'train', split= 'valid', batch_size = 16, filtered_indices = self.filtered_validation_indices)
-            valLoader = DataLoader(musValidation, batch_size = 1, collate_fn = self.collate, num_workers = 4)
-            return valLoader
-        else:
-            return self.validation_dataloader
+        musValidation = newMus('musdb/', subset = 'train', split= 'valid', batch_size = 16, filtered_indices = self.filtered_validation_indices)
+        valLoader = DataLoader(musValidation, batch_size = 8, collate_fn = self.collate, num_workers = 4, shuffle = False, persistent_workers = True)
+        return valLoader
     
     def test_dataloader(self):
         if self.testing_dataloader is None:
@@ -127,7 +133,6 @@ class LightningModel(pl.LightningModule):
     
     def forward_pass(self, X, chromas, mfccs):
         X = X.permute(0,1,3,4,2)
-        # takes in STFTs, chromas, chromas
         X1 = self.bandsplit(X)
         batch_size = X1.shape[0]
         #Shape: torch.Size([32, 22, 431, 128]) (batch_size, num_bands, time_steps, freq_N)

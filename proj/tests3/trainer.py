@@ -55,7 +55,8 @@ if __name__ == '__main__':
                          filtered_indices = hparams['filtered_training_indices'])
         trainLoader = DataLoader(musTraining, batch_size = 1, collate_fn = collate, num_workers = 4)
         lightning = LightningModel(hparams)
-        ddp = DDPStrategy(process_group_backend="gloo")
-        trainer = pl.Trainer(max_epochs=2, accelerator = 'cpu', devices = 2, strategy = 'ddp', log_every_n_steps=15)
-        trainer.fit(lightning, trainLoader, valLoader)
+        ddp = DDPStrategy(process_group_backend="gloo", find_unused_parameters = False)
+        trainer = pl.Trainer(max_epochs=2, accelerator = 'gpu', devices = 2, strategy = ddp)
+  #      trainer = pl.Trainer(max_epochs = 2, accelerator = 'cpu')
+        trainer.fit(lightning)
 

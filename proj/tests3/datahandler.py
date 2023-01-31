@@ -29,7 +29,6 @@ class DataHandler(nn.Module):
 
     def batchize_training_item(self,stems):
         # we need to trim the stems to the shortest duration track, starting from a random location
-        stems = self.trim_stems(stems, self.random_start(stems.shape[1]))
         stems = stems.permute(0,2,1).contiguous()
         stems = self.resample(stems)
         stems = stems.permute(0,2,1)
@@ -61,9 +60,10 @@ class DataHandler(nn.Module):
     def trim_stems(self, stems, start):
         # this function should trim the track to the shortest duration of the track from the start index, it allows looping back across the song.
         resampling_ratio = self.input_sampling_rate / self.sample_rate
-        if start + self.batch_size * self.segment_samples * resampling_ratio > stems.shape[1]:
+        reserved = 1.3 * self.batch_size * self.segment_samples * resampling_ratio + self.hop_length
+        if start + reserved > stems.shape[1]:
             first_half = stems[:, start:, :]
-            remaining = int(resampling_ratio * self.batch_size * self.segment_samples) + self.hop_length - (stems.shape[1] - start)
+            remaining = int(reserved) - (stems.shape[1] - start)
             second_half = stems[:, :remaining, :]
             return torch.cat((first_half, second_half), axis=1)
         else:
