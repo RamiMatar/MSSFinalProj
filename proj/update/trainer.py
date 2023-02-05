@@ -126,9 +126,9 @@ class Trainer:
         self.optimizer.zero_grad()
         data, labels = self.data_handler.batchize_training_item(source)
         stfts, chromas, mfccs = self.model.module.transforms(data)
-        predicted_sources = self.model.module.forward_pass(stfts, chromas, mfccs)
+        predicted_sources = self.model.module(stfts, chromas, mfccs)
         if epoch == 0 and batch_no == 0:
-            self.writer.add_graph(self.model.module, stfts)
+            self.writer.add_graph(self.model.module, [stfts, chromas, mfccs])
         loss, real_stft, predicted_stft, predicted_signal, real_signal = self.loss(predicted_sources, labels)
         real_stft = torch.sqrt(real_stft[:,:,0] ** 2 + real_stft[:,:,1] ** 2)
         self.writer.add_image('Training Truth STFT', real_stft.unsqueeze(2), epoch * len(self.valid_data) + batch_no, dataformats = 'HWC' )
@@ -144,7 +144,7 @@ class Trainer:
     def _run_validation_batch(self, source, epoch, batch_no):
         data, labels = self.data_handler.batchize_training_item(source)
         stfts, chromas, mfccs = self.model.module.transforms(data)
-        predicted_sources = self.model.module.forward_pass(stfts, chromas, mfccs)       
+        predicted_sources = self.model.module(stfts, chromas, mfccs)       
         loss, real_stft, predicted_stft, predicted_signal, real_signal = self.loss(predicted_sources, labels)
         real_stft = torch.sqrt(real_stft[:,:,0] ** 2 + real_stft[:,:,1] ** 2)
         self.writer.add_image('Validation Truth STFT', real_stft.unsqueeze(2), epoch * len(self.valid_data) + batch_no, dataformats = 'HWC' )
@@ -192,7 +192,7 @@ def load_train_objs(gpu_id):
     musTraining = newMus('musdb/', source = 'vocals', batch_size = 16, filtered_indices = hparams['filtered_training_indices'])
     musValidation = newMus('musdb/', subset = "train", split = "valid", source = 'vocals', batch_size = 16, filtered_indices = hparams['filtered_validation_indices']) # load your dataset
     model = TorchModel(hparams)  # load your model
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.05)
     data_handler = DataHandler(hparams['training_batch_size'],  hparams['shortest_duration'], hparams['sampling_rate'], hparams['resampling_rate'],
             hparams['hop_length'], hparams['longest_duration'], hparams['segment_overlap'], hparams['segment_chunks'], 
             hparams['segment_length'], hparams['chunks_below_percentile'], hparams['drop_percentile'])
@@ -212,10 +212,11 @@ def prepare_dataloader(dataset: Dataset, batch_size: int):
     )
 
 
-def main(rank: int, world_size: int, save_every: int, total_epochs: int, batch_size: int):
+def main(rank: int, world_size: int, save_every: int, total_epochs: int, batch_size: int, seed: int):
     print("starting process: ", rank)
     ddp_setup(rank, world_size)
     print("ddp setup: ", rank)
+    torch.manual_seed(seed)
     train_dataset, valid_dataset, model, data_handler, optimizer, loss = load_train_objs(rank)
     print("train objects loaded: ", rank)
     train_data = prepare_dataloader(train_dataset, batch_size)
@@ -247,4 +248,4 @@ if __name__ == "__main__":
     args = parser.parse_args() 
     world_size = torch.cuda.device_count()
     print("starting processes")
-    mp.spawn(main, args=(world_size, args.save_every, args.total_epochs, hparams['batch_size']), nprocs=world_size)
+    mp.spawn(main, args=(world_size, args.save_every, args.total_epochs, hparams['batch_size'], 40), nprocs=world_size)

@@ -55,10 +55,10 @@ class TorchModel(nn.Module):
             hparams['hop_length'], hparams['longest_duration'], hparams['segment_overlap'], hparams['segment_chunks'], 
             hparams['segment_length'], hparams['chunks_below_percentile'], hparams['drop_percentile'])
     
-    def forward(self, batch):
-        data, labels = self.data_handler.batchize_training_item(batch)
-        stfts, chromas, mfccs = self.transforms(data)
-        return self.forward_pass(stfts, chromas, mfccs)
+  #  def forward(self, batch):
+  #      data, labels = self.data_handler.batchize_training_item(batch)
+  #      stfts, chromas, mfccs = self.transforms(data)
+  #      return self.forward_pass(stfts, chromas, mfccs)
     
     def training_step(self, batch, batch_idx):
         if self.step % 200 == 0:
@@ -132,7 +132,7 @@ class TorchModel(nn.Module):
         else:
             return self.testing_dataloader
     
-    def forward_pass(self, X, chromas, mfccs):
+    def forward(self, X, chromas, mfccs):
         X = X.permute(0,1,3,4,2)
         X1 = self.bandsplit(X)
         batch_size = X1.shape[0]
@@ -152,7 +152,7 @@ class TorchModel(nn.Module):
         X, _ = self.blstms3(xchromas)      
         X = self.deconv1(X + X3)
         X = self.deconv2(torch.cat((X, X[:,:,:,-1].unsqueeze(3)), 3) + X2)
-        X = self.masks(X)
+        X = self.masks(X+X1)
         return X
     
     def configure_optimizers(self):
