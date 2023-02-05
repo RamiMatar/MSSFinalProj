@@ -1,7 +1,5 @@
 # !/bin/bash
 
-git clone https://github.com/ramimatar/MSSFinalProj.git
-
 pip install awscli
 
 aws configure set aws_access_key_id AKIAT4LS2WDTOZD4ZD6K

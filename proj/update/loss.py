@@ -21,9 +21,10 @@ class SSLoss(nn.Module):
         Y_stfts = torch.stack((real, imag), 3)
         Y_stfts = Y_stfts.reshape(X_stft.shape)
         X_signal = self.batch_time_signals(X_stft)
+        print(X_signal.shape, Y_signal.shape)
         signal_loss = self.signal_mean_absolute_error(X_signal, Y_signal)
         stfts_loss = self.stft_mean_absolute_error(X_stft, Y_stfts)
-        return signal_loss + stfts_loss
+        return signal_loss + stfts_loss, Y_stfts[0,0], X_stft[0,0], X_signal[0].unsqueeze(0), Y_signal[0].unsqueeze(0)
 
     def batch_time_signals(self, stfts):
         # This function should compute the time signals for each segment in the batch

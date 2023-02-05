@@ -14,6 +14,7 @@ from torch.distributed import init_process_group, destroy_process_group
 import os
 from torchmodel import TorchModel
 from loss import *
+from torch.utils.tensorboard import SummaryWriter
 
 hparams = {
         "mus_path": "musdb/",
@@ -91,6 +92,7 @@ class Trainer:
         train_data: DataLoader,
         valid_data: DataLoader,
         optimizer: torch.optim.Optimizer,
+        writer, 
         gpu_id: int,
         save_every: int,
         loss: SSLoss,
@@ -114,26 +116,43 @@ class Trainer:
         print(rank)
         self.model = DDP(model, device_ids=[gpu_id])
         print(rank)
+        self.writer = writer
         self.loss = loss
         self.loss = loss.to(gpu_id)
         print("Init completed ", rank)
         self.batch_size = batch_size
 
-    def _run_training_batch(self, source):
+    def _run_training_batch(self, source, epoch, batch_no):
         self.optimizer.zero_grad()
         data, labels = self.data_handler.batchize_training_item(source)
         stfts, chromas, mfccs = self.model.module.transforms(data)
         predicted_sources = self.model.module.forward_pass(stfts, chromas, mfccs)
-        loss = self.loss(predicted_sources, labels)
+        if epoch == 0 and batch_no == 0:
+            self.writer.add_graph(self.model.module, stfts)
+        loss, real_stft, predicted_stft, predicted_signal, real_signal = self.loss(predicted_sources, labels)
+        real_stft = torch.sqrt(real_stft[:,:,0] ** 2 + real_stft[:,:,1] ** 2)
+        self.writer.add_image('Training Truth STFT', real_stft.unsqueeze(2), epoch * len(self.valid_data) + batch_no, dataformats = 'HWC' )
+        predicted_stft = torch.sqrt(predicted_stft[:,:,0] ** 2 + predicted_stft[:,:,1] ** 2)
+        self.writer.add_image('Training Prediction STFT', predicted_stft.unsqueeze(2), epoch * len(self.valid_data) + batch_no, dataformats = 'HWC' )
+        self.writer.add_scalar('Training Loss', loss, epoch * len(self.train_data) + batch_no)
+        self.writer.add_audio('Training Predicted Signal', predicted_signal, epoch * len(self.train_data) + batch_no, sample_rate = 16000)
+        self.writer.add_audio('Training Ground Truth Signal', real_signal,  epoch * len(self.train_data) + batch_no, sample_rate = 16000)
         loss.backward()
         self.optimizer.step()
         return loss
     
-    def _run_validation_batch(self, source):
+    def _run_validation_batch(self, source, epoch, batch_no):
         data, labels = self.data_handler.batchize_training_item(source)
         stfts, chromas, mfccs = self.model.module.transforms(data)
-        predicted_sources = self.model.module.forward_pass(stfts, chromas, mfccs)
-        loss = self.loss(predicted_sources, labels)
+        predicted_sources = self.model.module.forward_pass(stfts, chromas, mfccs)       
+        loss, real_stft, predicted_stft, predicted_signal, real_signal = self.loss(predicted_sources, labels)
+        real_stft = torch.sqrt(real_stft[:,:,0] ** 2 + real_stft[:,:,1] ** 2)
+        self.writer.add_image('Validation Truth STFT', real_stft.unsqueeze(2), epoch * len(self.valid_data) + batch_no, dataformats = 'HWC' )
+        predicted_stft = torch.sqrt(predicted_stft[:,:,0] ** 2 + predicted_stft[:,:,1] ** 2)
+        self.writer.add_image('Validation Prediction STFT', predicted_stft.unsqueeze(2), epoch * len(self.valid_data) + batch_no, dataformats = 'HWC' )
+        self.writer.add_scalar('Validation Loss', loss, epoch * len(self.train_data) + batch_no)
+        self.writer.add_audio('Validation Predicted Signal', predicted_signal, epoch * len(self.train_data) + batch_no, sample_rate = 16000)
+        self.writer.add_audio('Validation Ground Truth Signal', real_signal,  epoch * len(self.train_data) + batch_no, sample_rate = 16000)
         return loss
     
     def _run_epoch(self, epoch):
@@ -142,12 +161,12 @@ class Trainer:
         self.model.train()
         for i, source in enumerate(self.train_data):
             source = source.to(self.gpu_id)
-            loss = self._run_training_batch(source)
+            loss = self._run_training_batch(source, epoch, i)
             print(f"[GPU{self.gpu_id}] Epoch {epoch} | Training step: {i} | Loss: {loss}")
         self.model.eval()  
         for i, source in enumerate(self.valid_data):
             source = source.to(self.gpu_id)
-            loss = self._run_validation_batch(source)
+            loss = self._run_validation_batch(source, epoch, i)
             print(f"[GPU{self.gpu_id}] Epoch {epoch} | Validation step: {i} | Loss: {loss}")
 
     def _save_checkpoint(self, epoch):
@@ -189,7 +208,7 @@ def prepare_dataloader(dataset: Dataset, batch_size: int):
         shuffle=False,
         sampler=DistributedSampler(dataset),
         collate_fn = collate,
-        num_workers = 3
+        num_workers = 0 
     )
 
 
@@ -202,8 +221,12 @@ def main(rank: int, world_size: int, save_every: int, total_epochs: int, batch_s
     train_data = prepare_dataloader(train_dataset, batch_size)
     valid_data = prepare_dataloader(valid_dataset, batch_size)
     print("train data prepared ", rank)
-    trainer = Trainer(model, train_data, valid_data, optimizer, rank, save_every, loss, batch_size, data_handler)
+    writer = SummaryWriter()
+    print("writer initialized ", rank)
+    trainer = Trainer(model, train_data, valid_data, optimizer, writer, rank, save_every, loss, batch_size, data_handler)
     print("Trainer initialized and starting training: ", rank)
+    model, optimizer = load_checkpoint(trainer.model, optimizer)
+    print("loaded model and optimizer")
     trainer.train(total_epochs)
     print("Destroing process group: ", rank)
     destroy_process_group()
@@ -211,7 +234,7 @@ def main(rank: int, world_size: int, save_every: int, total_epochs: int, batch_s
 def load_checkpoint(model: torch.nn.Module, optimizer: torch.optim.Optimizer):
     PATH = "checkpoint.pt"
     ckp = torch.load(PATH)
-    model.module.load_state_dict(ckp['model'])
+    model.module.load_state_dict(ckp['model_state'])
     optimizer.load_state_dict(ckp['optimizer'])
     return model, optimizer
 
