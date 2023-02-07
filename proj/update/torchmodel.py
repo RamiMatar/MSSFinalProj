@@ -151,10 +151,7 @@ class AlternatingBLSTMs(nn.Module):
     def forward(self, x):
         # Input shape: (batch_size, num_bands, N, time_steps)
         # Prepare for Band BLSTM: shape = (batch_size, num_bands, N * time_steps)
-        batch_size = x.shape[0]
-        x = x.reshape(batch_size, self.num_bands, -1)
         x = self.band_blstm(x)
-        x = x.reshape(batch_size, self.time_steps, -1)
         x = self.temporal_blstm(x)
         #x += residual
         # Return the output of the module
@@ -180,6 +177,7 @@ class BandBiLSTM(nn.Module):
         batch_size = x.shape[0]
         # (batch_size,time_steps, num_bands, N)
         skip = x
+        x = x.reshape(batch_size, self.num_bands, -1)
         x = self.norm(x)
         x, lstm_vars = self.bilstm(x)
         # (batch_size, num_bands, 2 * hidden_size)
@@ -187,7 +185,9 @@ class BandBiLSTM(nn.Module):
         # (batch_size, num_bands, time_steps, N)
         x = self.fc(x)
         # (batch_size, num_bands, time_steps, N)
-        x += skip
+        print(x.shape)
+        print(skip.shape)
+        x += skip.permute(0,1,3,2)
         # Return the output of the module
         return x
     
@@ -210,6 +210,12 @@ class TemporalBiLSTM(nn.Module):
         batch_size = x.shape[0]
         # (batch_size,time_steps, num_bands, N)
         skip = x
+        print(skip.shape)
+        if skip.shape[3] % 2 == 1:
+            print(skip.shape)
+            skip = torch.cat((skip, skip[:,:,:,-1].unsqueeze(3)) , 3)
+            print(skip.shape, "AFTER CHANGE")
+        x = x.reshape(batch_size, self.time_steps, -1)
         x = self.norm(x)
         residual = x.clone().detach()
         x, lstm_vars = self.bilstm(x)
@@ -217,9 +223,9 @@ class TemporalBiLSTM(nn.Module):
         x = x.reshape(batch_size, self.num_bands, self.time_steps, self.out)
         # (batch_size, num_bands, time_steps, N)
         x = self.fc(x)
+        x += skip
         x = x.permute(0,1,3,2)
         # (batch_size, num_bands, time_steps, N)
-        x += skip
         # Return the output of the module
         return x, lstm_vars
 
