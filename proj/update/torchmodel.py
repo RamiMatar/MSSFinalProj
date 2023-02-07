@@ -15,10 +15,6 @@ class TorchModel(nn.Module):
         super().__init__()
         self.mus_path = hparams['mus_path']
         self.bandwidths = [int(bandwidth) for bandwidth in hparams['bandwidths'].split(',')]
-        self.step = 0
-        self.filtered_training_indices = hparams['filtered_training_indices']
-        self.filtered_validation_indices = hparams['filtered_validation_indices']
-        self.filtered_testing_indices = None # fix this
         self.n_mels = hparams['n_mels']
         self.N = hparams['bandwidth_freq_out_size']
         self.K = len(self.bandwidths)
@@ -59,82 +55,9 @@ class TorchModel(nn.Module):
   #      data, labels = self.data_handler.batchize_training_item(batch)
   #      stfts, chromas, mfccs = self.transforms(data)
   #      return self.forward_pass(stfts, chromas, mfccs)
-    
-    def training_step(self, batch, batch_idx):
-        if self.step % 200 == 0:
-            torch.cuda.empty_cache()
-        self.step += 1
-        
-        data, labels = self.data_handler.batchize_training_item(batch)
-        stfts, chromas, mfccs = self.transforms(data)
-        predicted_sources = self.forward_pass(stfts, chromas, mfccs)
-        loss = self.loss(predicted_sources, labels[:,3])
-        self.log("train_loss", loss, sync_dist=True)
-        return loss
-    
-    def validation_step(self, batch, batch_idx):
-        if self.step % 5 == 200:
-            torch.cuda.empty_cache()
-            
-        self.step += 1
-        data, labels = self.data_handler.batchize_training_item(batch)
-        stfts, chromas, mfccs = self.transforms(data)
-        predicted_sources = self.forward_pass(stfts, chromas, mfccs)
-        loss = self.loss(predicted_sources, labels[:,3])
-        self.log("valid_loss", loss, sync_dist=True)
-        return loss
-    
-    def test_step(self, batch, batch_idx):
-        if self.step % 200 == 0:
-            torch.cuda.empty_cache()
-        self.step += 1
-        
-        data, labels = self.data_handler.batchize_training_item(batch)
-        stfts, chromas, mfccs = self.transforms(data)
-        predicted_sources = self.forward_pass(stfts, chromas, mfccs)
-        loss = self.loss(predicted_sources, labels[:,3])
-        self.log("test_loss", loss, sync_dist=True)
-        return loss
-    
-    def trim_stems(self, stems, start):
-        # this function should trim the track to the shortest duration of the track from the start index, it allows looping back across the song.
-        if start + self.reserved > stems.shape[1]:
-            first_half = stems[:, start:, :]
-            remaining = self.reserved - (stems.shape[1] - start)
-            second_half = stems[:, :remaining, :]
-            return torch.cat((first_half, second_half), axis=1)
-        else:
-            return stems[:, start:start+self.reserved, :]
-
-    def collate(self, batch):
-        super_batch = []
-        for stems in batch:
-            x = self.trim_stems(stems, torch.randint(0, stems.shape[1], (1,)))
-            super_batch.append(x)
-        super_batch = torch.stack(super_batch, 0)
-        return super_batch.view(len(batch) * batch[0].shape[0], self.reserved, 2)
-
-    def train_dataloader(self):
-        musTraining = newMus('musdb/', batch_size = 16, filtered_indices = self.filtered_training_indices)
-        trainLoader = DataLoader(musTraining, batch_size = 8, collate_fn = self.collate, num_workers = 8, shuffle = True, persistent_workers = True)
-        return trainLoader
-
-    def val_dataloader(self):
-        musValidation = newMus('musdb/', subset = 'train', split= 'valid', batch_size = 16, filtered_indices = self.filtered_validation_indices)
-        valLoader = DataLoader(musValidation, batch_size = 8, collate_fn = self.collate, num_workers = 4, shuffle = False, persistent_workers = True)
-        return valLoader
-    
-    def test_dataloader(self):
-        if self.testing_dataloader is None:
-            musValidation = newMus('musdb/', subset = 'train', split= 'test', batch_size = 16, filtered_indices = self.filtered_testing_indices)
-            valLoader = DataLoader(musValidation, batch_size = 1, collate_fn = self.collate, num_workers = 4)
-            return valLoader
-        else:
-            return self.testing_dataloader
-    
     def forward(self, X, chromas, mfccs):
-        X = X.permute(0,1,3,4,2)
-        X1 = self.bandsplit(X)
+        X0 = X.permute(0,1,3,4,2)
+        X1 = self.bandsplit(X0)
         batch_size = X1.shape[0]
         #Shape: torch.Size([32, 22, 431, 128]) (batch_size, num_bands, time_steps, freq_N)
         X2 = self.conv1(X1)
@@ -153,11 +76,8 @@ class TorchModel(nn.Module):
         X = self.deconv1(X + X3)
         X = self.deconv2(torch.cat((X, X[:,:,:,-1].unsqueeze(3)), 3) + X2)
         X = self.masks(X+X1)
+        X = X * X0
         return X
-    
-    def configure_optimizers(self):
-        optimizer = torch.optim.SGD(self.parameters(), lr = 0.001)
-        return optimizer
     
 
         
@@ -196,9 +116,9 @@ class ConvolutionLayer(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride, padding=0, dtype='float'):
         super(ConvolutionLayer, self).__init__()
         self.conv = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding=padding),
+            nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding=padding, bias = False),
             nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True)
+            nn.LeakyReLU(0.2, inplace=True)
         )
     def forward(self, x):
         x = self.conv(x)
@@ -208,9 +128,9 @@ class TransposeConvolutionLayer(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride, dtype='float'):
         super(TransposeConvolutionLayer, self).__init__()
         self.conv = nn.Sequential(
-            nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride),
+            nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, bias = False),
             nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True)
+            nn.LeakyReLU(0.2, inplace=True)
         )
     def forward(self, x):
         x = self.conv(x)
@@ -245,7 +165,7 @@ class AlternatingBLSTMs(nn.Module):
 class BandBiLSTM(nn.Module):
     def __init__(self, num_bands, time_steps, N, axis=1):
         super(BandBiLSTM, self).__init__()
-        self.norm = nn.GroupNorm(num_bands, num_bands)
+        self.norm = nn.GroupNorm(1, num_bands)
         self.input_size = time_steps * N
         self.hidden_size = self.input_size // 2
         self.bilstm = nn.LSTM(self.input_size, self.hidden_size, bidirectional=True, batch_first=True)
@@ -259,22 +179,22 @@ class BandBiLSTM(nn.Module):
     def forward(self, x):
         batch_size = x.shape[0]
         # (batch_size,time_steps, num_bands, N)
+        skip = x
         x = self.norm(x)
-        residual = x.clone().detach()
         x, lstm_vars = self.bilstm(x)
         # (batch_size, num_bands, 2 * hidden_size)
         x = x.reshape(batch_size, self.num_bands, self.time_steps, self.N)
         # (batch_size, num_bands, time_steps, N)
         x = self.fc(x)
         # (batch_size, num_bands, time_steps, N)
-        #x += residual
+        x += skip
         # Return the output of the module
         return x
     
 class TemporalBiLSTM(nn.Module):
     def __init__(self, num_bands, time_steps, N, out, axis=1):
         super(TemporalBiLSTM, self).__init__()
-        self.norm = nn.GroupNorm(time_steps, time_steps)
+        self.norm = nn.GroupNorm(1, time_steps)
         self.input_size = num_bands * N
         self.hidden_size = num_bands * out // 2
         self.out = out
@@ -289,6 +209,7 @@ class TemporalBiLSTM(nn.Module):
     def forward(self, x):
         batch_size = x.shape[0]
         # (batch_size,time_steps, num_bands, N)
+        skip = x
         x = self.norm(x)
         residual = x.clone().detach()
         x, lstm_vars = self.bilstm(x)
@@ -298,7 +219,7 @@ class TemporalBiLSTM(nn.Module):
         x = self.fc(x)
         x = x.permute(0,1,3,2)
         # (batch_size, num_bands, time_steps, N)
-        #x += residual
+        x += skip
         # Return the output of the module
         return x, lstm_vars
 
@@ -337,7 +258,7 @@ class MLP(nn.Module):
         super(MLP, self).__init__()
         self.MLP = nn.Sequential(
             nn.Linear(in_dim, hidden_dim),
-            nn.ReLU(),
+            nn.Tanh(),
             nn.Linear(hidden_dim, out_dim)
         )
         
@@ -354,6 +275,7 @@ class MaskEstimation(nn.Module):
         self.batch_size = batch_size
         self.norm_layers = torch.nn.ModuleList([torch.nn.LayerNorm(N) for bandwidth in self.bandwidths])
         self.MLP_layers = torch.nn.ModuleList([MLP(N, bandwidth * 2, N * 2) for bandwidth in self.bandwidths])
+        self.glu = torch.nn.GLU(3)
     def forward(self, x):
         # Input shape: (batch_size, num_bands, N, T)
         time_steps = x.shape[3]
@@ -364,7 +286,8 @@ class MaskEstimation(nn.Module):
             y = self.norm_layers[i](x[i])
             y = self.MLP_layers[i](y)
             out.append(y)
-        out = torch.cat(out, 2)
+        out = torch.cat(out, 3)
+        out = self.glu(out.repeat(1,1,1,2))
         out = out.reshape(self.batch_size // 2, 2, sum(self.bandwidths), time_steps, 2)
         return out
 
