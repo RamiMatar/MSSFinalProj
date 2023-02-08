@@ -98,6 +98,7 @@ class Trainer:
         loss: SSLoss,
         batch_size: int,
         data_handler: torch.nn.Module,
+        overfit: int,
     ) -> None:
         self.gpu_id = gpu_id
         rank = gpu_id
@@ -117,47 +118,79 @@ class Trainer:
         self.model = DDP(model, device_ids=[gpu_id])
         print(rank)
         self.writer = writer
+        self.epoch = 0
+        self.overfit = overfit
         self.loss = loss
         self.loss = loss.to(gpu_id)
         print("Init completed ", rank)
         self.batch_size = batch_size
 
-    def _run_training_batch(self, source, epoch, batch_no):
+    def _run_training_batch(self, source, epoch, batch_num):
         self.optimizer.zero_grad()
         data, labels = self.data_handler.batchize_training_item(source)
         stfts, chromas, mfccs = self.model.module.transforms(data)
+        step = (self.epoch + epoch) * len(self.train_data) + batch_num
         predicted_sources = self.model.module(stfts, chromas, mfccs)
-        if epoch == 0 and batch_no == 0:
+        if epoch == 0 and batch_num == 0:
             self.writer.add_graph(self.model.module, [stfts, chromas, mfccs])
         loss, real_stft, predicted_stft, predicted_signal, real_signal = self.loss(predicted_sources, labels)
         real_stft = torch.sqrt(real_stft[:,:,0] ** 2 + real_stft[:,:,1] ** 2)
-        self.writer.add_image('Training Truth STFT', real_stft.unsqueeze(2), epoch * len(self.valid_data) + batch_no, dataformats = 'HWC' )
+        self.writer.add_image('Training Truth STFT', real_stft.unsqueeze(2), step, dataformats = 'HWC' )
         predicted_stft = torch.sqrt(predicted_stft[:,:,0] ** 2 + predicted_stft[:,:,1] ** 2)
-        self.writer.add_image('Training Prediction STFT', predicted_stft.unsqueeze(2), epoch * len(self.valid_data) + batch_no, dataformats = 'HWC' )
-        self.writer.add_scalar('Training Loss', loss, epoch * len(self.train_data) + batch_no)
-        self.writer.add_audio('Training Predicted Signal', predicted_signal, epoch * len(self.train_data) + batch_no, sample_rate = 16000)
-        self.writer.add_audio('Training Ground Truth Signal', real_signal,  epoch * len(self.train_data) + batch_no, sample_rate = 16000)
+        self.writer.add_image('Training Prediction STFT', predicted_stft.unsqueeze(2), step, dataformats = 'HWC' )
+        self.writer.add_scalar('Training Loss', loss, step)
+        self.writer.add_audio('Training Predicted Signal', predicted_signal, step, sample_rate = 16000)
+        self.writer.add_audio('Training Ground Truth Signal', real_signal,  step, sample_rate = 16000)
         loss.backward()
         self.optimizer.step()
+        torch.nn.utils.clip_grad_norm_(self.model.module.parameters(), max_norm = 5)
         return loss
     
-    def _run_validation_batch(self, source, epoch, batch_no):
+    def _run_validation_batch(self, source, epoch, batch_num):
         data, labels = self.data_handler.batchize_training_item(source)
         stfts, chromas, mfccs = self.model.module.transforms(data)
-        predicted_sources = self.model.module(stfts, chromas, mfccs)       
+        predicted_sources = self.model.module(stfts, chromas, mfccs)   
+        step = (self.epoch + epoch) * len(self.valid_data) + batch_num
         loss, real_stft, predicted_stft, predicted_signal, real_signal = self.loss(predicted_sources, labels)
         real_stft = torch.sqrt(real_stft[:,:,0] ** 2 + real_stft[:,:,1] ** 2)
-        self.writer.add_image('Validation Truth STFT', real_stft.unsqueeze(2), epoch * len(self.valid_data) + batch_no, dataformats = 'HWC' )
+        self.writer.add_image('Validation Truth STFT', real_stft.unsqueeze(2), step, dataformats = 'HWC' )
         predicted_stft = torch.sqrt(predicted_stft[:,:,0] ** 2 + predicted_stft[:,:,1] ** 2)
-        self.writer.add_image('Validation Prediction STFT', predicted_stft.unsqueeze(2), epoch * len(self.valid_data) + batch_no, dataformats = 'HWC' )
-        self.writer.add_scalar('Validation Loss', loss, epoch * len(self.train_data) + batch_no)
-        self.writer.add_audio('Validation Predicted Signal', predicted_signal, epoch * len(self.train_data) + batch_no, sample_rate = 16000)
-        self.writer.add_audio('Validation Ground Truth Signal', real_signal,  epoch * len(self.train_data) + batch_no, sample_rate = 16000)
+        self.writer.add_image('Validation Prediction STFT', predicted_stft.unsqueeze(2), step, dataformats = 'HWC' )
+        self.writer.add_scalar('Validation Loss', loss, step)
+        self.writer.add_audio('Validation Predicted Signal', predicted_signal, step, sample_rate = 16000)
+        self.writer.add_audio('Validation Ground Truth Signal', real_signal,  step, sample_rate = 16000)
         return loss
+    
+    def _run_to_overfit(self):
+        data = next(iter(self.train_data))
+        data = next(iter(self.train_data))
+        data = next(iter(self.train_data))
+        data = data.to(self.gpu_id)
+        data, labels = self.data_handler.batchize_training_item(data)
+        stfts, chromas, mfccs = self.model.module.transforms(data)
+        for i in range(1000):
+            self.optimizer.zero_grad()
+            step = i 
+            predicted_sources = self.model.module(stfts, chromas, mfccs)
+            loss, real_stft, predicted_stft, predicted_signal, real_signal = self.loss(predicted_sources, labels)
+            real_stft = torch.sqrt(real_stft[:,:,0] ** 2 + real_stft[:,:,1] ** 2)
+            self.writer.add_image('Training Truth STFT', real_stft.unsqueeze(2), step, dataformats = 'HWC' )
+            predicted_stft = torch.sqrt(predicted_stft[:,:,0] ** 2 + predicted_stft[:,:,1] ** 2)
+            self.writer.add_image('Training Prediction STFT', predicted_stft.unsqueeze(2), step, dataformats = 'HWC' )
+            self.writer.add_scalar('Training Loss', loss, step)
+            self.writer.add_audio('Training Predicted Signal', predicted_signal, step, sample_rate = 16000)
+            self.writer.add_audio('Training Ground Truth Signal', real_signal,  step, sample_rate = 16000)
+            loss.backward()
+            self.optimizer.step()
+            torch.nn.utils.clip_grad_norm_(self.model.module.parameters(), max_norm = 5)
+        
+
+    
+    
     
     def _run_epoch(self, epoch):
         print(f"[GPU{self.gpu_id}] Epoch {epoch} | Batchsize: {self.batch_size} | Steps: {len(self.train_data) + len(self.valid_data)}")
-        self.train_data.sampler.set_epoch(epoch)
+        self.train_data.sampler.set_epoch(self.epoch + epoch)
         self.model.train()
         for i, source in enumerate(self.train_data):
             source = source.to(self.gpu_id)
@@ -172,13 +205,18 @@ class Trainer:
     def _save_checkpoint(self, epoch):
         ckp = {'model_state' : self.model.module.state_dict(),
                 'optimizer' : self.optimizer.state_dict(),
-                'model' : self.model
+                'model' : self.model,
+                'epoch' : epoch + self.epoch + 1
                 }
         PATH = "checkpoint.pt"
         torch.save(ckp, PATH)
         print(f"Epoch {epoch} | Training checkpoint saved at {PATH}")
 
     def train(self, max_epochs: int):
+        if self.overfit:
+            print("SKIPPING ALL AND OVERFITTING")
+            self._run_to_overfit()
+            return
         rank = self.gpu_id
         for epoch in range(max_epochs):
             print(rank, " started epoch ", epoch)
@@ -192,7 +230,7 @@ def load_train_objs(gpu_id):
     musTraining = newMus('musdb/', source = 'vocals', batch_size = 16, filtered_indices = hparams['filtered_training_indices'])
     musValidation = newMus('musdb/', subset = "train", split = "valid", source = 'vocals', batch_size = 16, filtered_indices = hparams['filtered_validation_indices']) # load your dataset
     model = TorchModel(hparams)  # load your model
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.05)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.002)
     data_handler = DataHandler(hparams['training_batch_size'],  hparams['shortest_duration'], hparams['sampling_rate'], hparams['resampling_rate'],
             hparams['hop_length'], hparams['longest_duration'], hparams['segment_overlap'], hparams['segment_chunks'], 
             hparams['segment_length'], hparams['chunks_below_percentile'], hparams['drop_percentile'])
@@ -212,7 +250,7 @@ def prepare_dataloader(dataset: Dataset, batch_size: int):
     )
 
 
-def main(rank: int, world_size: int, save_every: int, total_epochs: int, batch_size: int, seed: int):
+def main(rank: int, world_size: int, save_every: int, total_epochs: int, batch_size: int, seed: int, load: int, writer_dir = None, overfit = 0):
     print("starting process: ", rank)
     ddp_setup(rank, world_size)
     print("ddp setup: ", rank)
@@ -222,11 +260,19 @@ def main(rank: int, world_size: int, save_every: int, total_epochs: int, batch_s
     train_data = prepare_dataloader(train_dataset, batch_size)
     valid_data = prepare_dataloader(valid_dataset, batch_size)
     print("train data prepared ", rank)
-    writer = SummaryWriter()
+    if writer_dir is None:
+        writer = SummaryWriter()
+    else:
+        print("REACHED WRITER DIR")
+        writer = SummaryWriter(writer_dir)
     print("writer initialized ", rank)
-    trainer = Trainer(model, train_data, valid_data, optimizer, writer, rank, save_every, loss, batch_size, data_handler)
+    trainer = Trainer(model, train_data, valid_data, optimizer, writer, rank, save_every, loss, batch_size, data_handler, overfit)
     print("Trainer initialized and starting training: ", rank)
-    model, optimizer = load_checkpoint(trainer.model, optimizer)
+    if load == 0 or overfit:
+        epoch = 0
+    else:
+        model, epoch, optimizer = load_checkpoint(trainer.model, optimizer)
+    trainer.epoch = epoch
     print("loaded model and optimizer")
     trainer.train(total_epochs)
     print("Destroing process group: ", rank)
@@ -237,15 +283,21 @@ def load_checkpoint(model: torch.nn.Module, optimizer: torch.optim.Optimizer):
     ckp = torch.load(PATH)
     model.module.load_state_dict(ckp['model_state'])
     optimizer.load_state_dict(ckp['optimizer'])
-    return model, optimizer
+    epoch = ckp['epoch']
+    print("RESUMING FROM EPOCH ", epoch)
+    return model, epoch,optimizer
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='simple distributed training job')
     parser.add_argument('total_epochs', type=int, help='Total epochs to train the model')
     parser.add_argument('save_every', type=int, help='How often to save a snapshot')
+    parser.add_argument('load_model', type=int, help='0 to start a new model, non 0 to continue from checkpoint.pt')
+    parser.add_argument('seed', type=int, help='seed for pseudorandom generation')
+    parser.add_argument('writer_dir', type=str, help = "directory for tensorboard logs")
+    parser.add_argument('overfit', type=int, help = "0 to run regularly, nonzero to overfit on 1 batch")
     parser.add_argument('--batch_size', default=32, type=int, help='Input batch size on each device (default: 32)')
     args = parser.parse_args() 
     world_size = torch.cuda.device_count()
     print("starting processes")
-    mp.spawn(main, args=(world_size, args.save_every, args.total_epochs, hparams['batch_size'], 40), nprocs=world_size)
+    mp.spawn(main, args=(world_size, args.save_every, args.total_epochs, hparams['batch_size'], args.seed, args.load_model, args.writer_dir, args.overfit), nprocs=world_size)

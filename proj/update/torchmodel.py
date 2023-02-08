@@ -209,9 +209,10 @@ class TemporalBiLSTM(nn.Module):
     def forward(self, x):
         batch_size = x.shape[0]
         # (batch_size,time_steps, num_bands, N)
-        skip = x
+        skip = x[:,:,:,:self.out]
+        print(x.shape, "CHECKING")
         print(skip.shape)
-        if skip.shape[3] % 2 == 1:
+        if skip.shape[3] + 1 == self.out:
             print(skip.shape)
             skip = torch.cat((skip, skip[:,:,:,-1].unsqueeze(3)) , 3)
             print(skip.shape, "AFTER CHANGE")
@@ -223,6 +224,8 @@ class TemporalBiLSTM(nn.Module):
         x = x.reshape(batch_size, self.num_bands, self.time_steps, self.out)
         # (batch_size, num_bands, time_steps, N)
         x = self.fc(x)
+        print("SKIP: ", skip.shape)
+        print("X: ", x.shape)
         x += skip
         x = x.permute(0,1,3,2)
         # (batch_size, num_bands, time_steps, N)
@@ -281,7 +284,7 @@ class MaskEstimation(nn.Module):
         self.batch_size = batch_size
         self.norm_layers = torch.nn.ModuleList([torch.nn.LayerNorm(N) for bandwidth in self.bandwidths])
         self.MLP_layers = torch.nn.ModuleList([MLP(N, bandwidth * 2, N * 2) for bandwidth in self.bandwidths])
-        self.glu = torch.nn.GLU(3)
+        self.glu = torch.nn.GLU(2)
     def forward(self, x):
         # Input shape: (batch_size, num_bands, N, T)
         time_steps = x.shape[3]
@@ -292,8 +295,10 @@ class MaskEstimation(nn.Module):
             y = self.norm_layers[i](x[i])
             y = self.MLP_layers[i](y)
             out.append(y)
-        out = torch.cat(out, 3)
-        out = self.glu(out.repeat(1,1,1,2))
+            print(y.shape, "YSHAPE")
+        print(len(out))
+        out = torch.cat(out, 2)
+        out = self.glu(out.repeat(1,1,2))
         out = out.reshape(self.batch_size // 2, 2, sum(self.bandwidths), time_steps, 2)
         return out
 
