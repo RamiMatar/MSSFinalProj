@@ -30,7 +30,7 @@ class Model(nn.Module):
         self.reserved = int(0.7 * self.batch_size * self.segment_samples + self.hop_length)
         self.transforms = Transforms(self.sampling_rate, self.resampling_rate, hparams['n_fft'], self.hop_length, hparams['hop_length'], self.n_mels)
         self.bandsplit = BandSplit(self.bandwidths[:], self.N, self.n_chroma, self.n_mels)
-        self.alternating_lstms = AlternatingBLSTMs(2, self.N, self.time_steps, self.K)
+        self.alternating_lstms = AlternatingBLSTMs(6, self.N, self.time_steps, self.K)
         self.masks = MaskEstimation(self.bandwidths, self.N, hparams['training_batch_size'] * 2)
 
     def forward(self, X):
@@ -160,18 +160,15 @@ class BandBLSTModule(nn.Module):
 
     def forward(self, X):
         skip = X
-        print(skip.shape)
         X = X.permute(0,3,1,2)
         X = self.norm(X)
         X = X.permute(0,2,3,1)
         outputs = []
-        print(X[:,0,:,:].shape)
         for i in range(self.T):
             output, _ = self.blstms[i](X[:,:,i,:])
             output = self.fc[i](output)
             outputs.append(output)
         output = torch.stack(outputs, dim=2)
-        print(output.shape, skip.shape)
         output = output + skip
         return output
         
@@ -227,9 +224,7 @@ class MaskEstimation(nn.Module):
         self.sigmoid = torch.nn.Sigmoid()
     def forward(self, x):
         # Input shape: (batch_size, num_bands, N, T)
-        time_steps = x.shape[2]
-        print(x.shape)
-        print(self.num_bands)
+        time_steps = x.shape[2] 
         x = x.permute(1, 0 , 2, 3)
         out = []
         # shape: (num_bands, batch_size, T, N)

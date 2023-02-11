@@ -12,7 +12,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 import os
-from torchmodel import TorchModel
+from revised import Model
 from loss import *
 from torch.utils.tensorboard import SummaryWriter
 
@@ -31,7 +31,7 @@ hparams = {
         "conv_3_kernel_size":(1,7),
         "conv_3_stride":(1,3),
         "conv_3_ch_out_1":8,
-        "time_steps": 431,
+        "time_steps": 157,
         "batch_size": 1,
         "freq_bands": 1025,
         "n_mels": 32,
@@ -88,7 +88,7 @@ def ddp_setup(rank, world_size):
 class Trainer:
     def __init__(
         self,
-        model: TorchModel,
+        model: Model,
         train_data: DataLoader,
         valid_data: DataLoader,
         optimizer: torch.optim.Optimizer,
@@ -128,11 +128,10 @@ class Trainer:
     def _run_training_batch(self, source, epoch, batch_num):
         self.optimizer.zero_grad()
         data, labels = self.data_handler.batchize_training_item(source)
-        stfts, chromas, mfccs = self.model.module.transforms(data)
         step = (self.epoch + epoch) * len(self.train_data) + batch_num
-        predicted_sources = self.model.module(stfts, chromas, mfccs)
+        predicted_sources = self.model.module(data)
         if epoch == 0 and batch_num == 0:
-            self.writer.add_graph(self.model.module, [stfts, chromas, mfccs])
+            self.writer.add_graph(self.model.module, data)
         loss, real_stft, predicted_stft, predicted_signal, real_signal = self.loss(predicted_sources, labels)
         real_stft = torch.sqrt(real_stft[:,:,0] ** 2 + real_stft[:,:,1] ** 2)
         self.writer.add_image('Training Truth STFT', real_stft.unsqueeze(2), step, dataformats = 'HWC' )
@@ -148,8 +147,7 @@ class Trainer:
     
     def _run_validation_batch(self, source, epoch, batch_num):
         data, labels = self.data_handler.batchize_training_item(source)
-        stfts, chromas, mfccs = self.model.module.transforms(data)
-        predicted_sources = self.model.module(stfts, chromas, mfccs)   
+        predicted_sources = self.model.module(data)   
         step = (self.epoch + epoch) * len(self.valid_data) + batch_num
         loss, real_stft, predicted_stft, predicted_signal, real_signal = self.loss(predicted_sources, labels)
         real_stft = torch.sqrt(real_stft[:,:,0] ** 2 + real_stft[:,:,1] ** 2)
@@ -167,11 +165,10 @@ class Trainer:
         data = next(iter(self.train_data))
         data = data.to(self.gpu_id)
         data, labels = self.data_handler.batchize_training_item(data)
-        stfts, chromas, mfccs = self.model.module.transforms(data)
         for i in range(1000):
             self.optimizer.zero_grad()
             step = i 
-            predicted_sources = self.model.module(stfts, chromas, mfccs)
+            predicted_sources = self.model.module(data)
             loss, real_stft, predicted_stft, predicted_signal, real_signal = self.loss(predicted_sources, labels)
             real_stft = torch.sqrt(real_stft[:,:,0] ** 2 + real_stft[:,:,1] ** 2)
             self.writer.add_image('Training Truth STFT', real_stft.unsqueeze(2), step, dataformats = 'HWC' )
@@ -191,12 +188,15 @@ class Trainer:
     def _run_epoch(self, epoch):
         print(f"[GPU{self.gpu_id}] Epoch {epoch} | Batchsize: {self.batch_size} | Steps: {len(self.train_data) + len(self.valid_data)}")
         self.train_data.sampler.set_epoch(self.epoch + epoch)
-        self.model.train()
+        print("Done setting sampler ", self.gpu_id) 
+        self.model.module.train()
+        print("model training ", self.gpu_id)
         for i, source in enumerate(self.train_data):
             source = source.to(self.gpu_id)
             loss = self._run_training_batch(source, epoch, i)
             print(f"[GPU{self.gpu_id}] Epoch {epoch} | Training step: {i} | Loss: {loss}")
-        self.model.eval()  
+        self.model.eval() 
+        print("model evaluating ", self.gpu_id)
         for i, source in enumerate(self.valid_data):
             source = source.to(self.gpu_id)
             loss = self._run_validation_batch(source, epoch, i)
@@ -229,7 +229,7 @@ class Trainer:
 def load_train_objs(gpu_id):
     musTraining = newMus('musdb/', source = 'vocals', batch_size = 16, filtered_indices = hparams['filtered_training_indices'])
     musValidation = newMus('musdb/', subset = "train", split = "valid", source = 'vocals', batch_size = 16, filtered_indices = hparams['filtered_validation_indices']) # load your dataset
-    model = TorchModel(hparams)  # load your model
+    model = Model(hparams)  # load your model
     optimizer = torch.optim.Adam(model.parameters(), lr=0.002)
     data_handler = DataHandler(hparams['training_batch_size'],  hparams['shortest_duration'], hparams['sampling_rate'], hparams['resampling_rate'],
             hparams['hop_length'], hparams['longest_duration'], hparams['segment_overlap'], hparams['segment_chunks'], 
