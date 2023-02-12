@@ -12,7 +12,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 import os
-from revised import Model
+from attempt2 import Model
 from loss import *
 from torch.utils.tensorboard import SummaryWriter
 
@@ -142,7 +142,7 @@ class Trainer:
         self.writer.add_audio('Training Ground Truth Signal', real_signal,  step, sample_rate = 16000)
         loss.backward()
         self.optimizer.step()
-        torch.nn.utils.clip_grad_norm_(self.model.module.parameters(), max_norm = 5)
+       #  torch.nn.utils.clip_grad_norm_(self.model.module.parameters(), max_norm = 5)
         return loss
     
     def _run_validation_batch(self, source, epoch, batch_num):
@@ -230,7 +230,7 @@ def load_train_objs(gpu_id):
     musTraining = newMus('musdb/', source = 'vocals', batch_size = 16, filtered_indices = hparams['filtered_training_indices'])
     musValidation = newMus('musdb/', subset = "train", split = "valid", source = 'vocals', batch_size = 16, filtered_indices = hparams['filtered_validation_indices']) # load your dataset
     model = Model(hparams)  # load your model
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.002)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
     data_handler = DataHandler(hparams['training_batch_size'],  hparams['shortest_duration'], hparams['sampling_rate'], hparams['resampling_rate'],
             hparams['hop_length'], hparams['longest_duration'], hparams['segment_overlap'], hparams['segment_chunks'], 
             hparams['segment_length'], hparams['chunks_below_percentile'], hparams['drop_percentile'])

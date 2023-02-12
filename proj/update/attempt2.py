@@ -62,9 +62,11 @@ class Transforms(nn.Module):
         self.stft = torchaudio.transforms.Spectrogram(n_fft = n_fft, hop_length = hop_length, win_length = win_length, power = None)
         self.mel = torchaudio.transforms.MelScale(sample_rate = resample_freq, n_mels = n_mels, n_stft = n_fft // 2 + 1)
         self.chroma = Chroma(n_fft = n_fft, sampling_rate = resample_freq)
-
+        self.dropout = nn.Dropout(p = 0.15, inplace = True)
     def forward(self, X):
         stft = self.stft(X)
+        mask = self.dropout(torch.ones_like(stft.real))
+        stft = stft * mask
         power_spectrogram = torch.abs(stft).pow(2)
         real = stft.real
         imag = stft.imag
@@ -150,6 +152,7 @@ class BandBLSTModule(nn.Module):
 
     def forward(self, X):
         skip = X
+        shape = skip.shape
         print(skip.shape)
         X = X.permute(0,3,1,2)
         X = self.norm(X)
@@ -157,6 +160,7 @@ class BandBLSTModule(nn.Module):
         X = X.reshape(X.shape[0] * X.shape[1], X.shape[2], X.shape[3])
         X, _ = self.blstm(X)
         X = self.fc(X)
+        X = X.reshape(shape) 
         X = X + skip
         return X
         
@@ -173,13 +177,15 @@ class TemporalBLSTMModule(nn.Module):
 
     def forward(self, X):
         skip = X
+        shape = skip.shape
         print(skip.shape)
         X = X.permute(0,3,1,2)
         X = self.norm(X)
-        X = X.permute(0,2,1,3)
+        X = X.permute(0,2,3,1)
         X = X.reshape(X.shape[0] * X.shape[1], X.shape[2], X.shape[3])
         X, _ = self.blstm(X)
         X = self.fc(X)
+        X = X.reshape(shape)
         X = X + skip
         return X
 
