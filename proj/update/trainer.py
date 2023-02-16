@@ -12,7 +12,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 import os
-from attempt2 import Model
+from convlstmmodel import Model
 from loss import *
 from torch.utils.tensorboard import SummaryWriter
 
@@ -50,8 +50,12 @@ hparams = {
         'training_batch_size' : 16,
         'testing_batch_size' : 64,
         'filtered_training_indices' : '0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,50,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85',
-        'filtered_validation_indices' : '0,1,2,3,4,5,6,7,8,9,10,11,12,13'
-    }
+        'filtered_validation_indices' : '0,1,2,3,4,5,6,7,8,9,10,11,12,13',
+        'out_conv_multiplier' : 2,
+        'num_layers' : 3,
+        'encoder_activation': 'LeakyReLU',
+        'K' : 22
+        }
 
 segment_samples = hparams['segment_length'] * hparams['sampling_rate']
 segment_samples = int(segment_samples / hparams['hop_length']) * hparams['hop_length']

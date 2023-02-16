@@ -137,47 +137,51 @@ class BandSplit(torch.nn.Module):
 
 class ConvLSTMEncoder(nn.Module):
     def __init__(self, hparams):
+        super(ConvLSTMEncoder, self).__init__()
         self.num_layers = hparams['num_layers']
         self.activation = hparams['encoder_activation']
         self.out_conv_multiplier = hparams['out_conv_multiplier']
         self.in_time_dim = hparams['time_steps'] # change this to be dynamic
         self.K = hparams['K']
         self.in_channels = 1
+        self.encoders = []
         for i in range(self.num_layers):
             convlstm = ConvLSTMCell(self.in_channels, self.in_channels * self.out_conv_multiplier, (3,3), True)
             norm = nn.GroupNorm(1, self.K)
             encoder = nn.Sequential(convlstm, norm)
             self.encoders.append(encoder)
-            in_channels *= self.out_conv_multiplier
-        self.out_channels = in_channels
+            self.in_channels *= self.out_conv_multiplier
+        self.out_channels = self.in_channels
     
     def forward(self, x):
         skips = []
         for i in range(self.num_layers):
-            x = self.encoders[i](x)
+            x = self.encoders[i](x,None)
             skips.append(x)
         return x, skips
 
 class ConvLSTMDecoder(nn.Module):
     def __init__(self, hparams):
+        super(ConvLSTMDecoder, self).__init__()
         self.num_layers = hparams['num_layers']
-        self.activation = hparams['decoder_activation']
+        self.activation = hparams['encoder_activation']
         self.out_conv_multiplier = hparams['out_conv_multiplier']
         self.in_time_dim = hparams['time_steps'] # change this to be dynamic
         self.K = hparams['K']
         self.in_channels = self.out_conv_multiplier ** self.num_layers
+        self.decoders = []
         for i in range(self.num_layers):
             convlstm = ConvLSTMCell(self.in_channels, self.in_channels // self.out_conv_multiplier, (3,3), True)
             norm = nn.GroupNorm(1, self.K)
             decoder = nn.Sequential(convlstm, norm)
             self.decoders.append(decoder)
-            in_channels = in_channels // self.out_conv_multiplier
-        self.out_channels = in_channels
+            self.in_channels = self.in_channels // self.out_conv_multiplier
+        self.out_channels = self.in_channels
     
     def forward(self, x, skips):
         for i in range(self.num_layers):
             x = x + skips[-i-1]
-            x = self.decoders[i](x)
+            x = self.decoders[i](x,None)
         return x
 
 
